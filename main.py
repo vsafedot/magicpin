@@ -1,9 +1,14 @@
 import re
 import time
+import os
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = FastAPI()
 
@@ -249,4 +254,6 @@ async def reply(data: ReplyPayload):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8085)
+    import os
+    port = int(os.environ.get("PORT", 8085))
+    uvicorn.run(app, host="0.0.0.0", port=port)

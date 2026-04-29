@@ -27,7 +27,7 @@ load_dotenv()
 # =============================================================================
 
 # Your bot's URL (where your bot is running)
-BOT_URL = os.environ.get("BOT_URL", "http://localhost:8085")
+BOT_URL = os.environ.get("BOT_URL", "https://magicpin-y3es.onrender.com/v1/")
 
 # Choose your LLM provider: "openai", "anthropic", "gemini", "deepseek", "groq", "ollama", "openrouter"
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "groq")
