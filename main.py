@@ -219,22 +219,110 @@ async def tick(data: TickPayload):
                 body = f"{salutation}, there's a wedding package follow-up needed. Want me to handle the next steps?"
                 rationale = "Wedding package follow-up."
 
+        # Add more specific trigger handlers
+        elif t_kind == "seasonal_perf_dip":
+            metric = t_payload.get("metric", "bookings")
+            season = t_payload.get("season", "current season")
+            body = f"{salutation}, your {metric} are down this {season} vs last year. Your '{offer_title}' could help recover. Should we activate it?"
+            rationale = "Seasonal performance comparison with specific recovery action."
+
+        elif t_kind == "customer_lapsed_hard":
+            days_lapsed = t_payload.get("days_since_last_visit", 90)
+            body = f"{salutation}, you have customers who haven't visited in {days_lapsed}+ days. Want me to draft a winback campaign with '{offer_title}'?"
+            rationale = "Customer retention alert with specific timeframe and winback offer."
+
+        elif t_kind == "active_planning_intent":
+            intent_type = t_payload.get("intent", "service planning")
+            body = f"{salutation}, I detected {intent_type} activity from your customers. Perfect time to promote '{offer_title}'. Should we create a targeted campaign?"
+            rationale = "Customer intent detection with timely offer promotion."
+
+        elif t_kind == "trial_followup":
+            service = t_payload.get("service", "trial service")
+            days_since = t_payload.get("days_since_trial", 7)
+            body = f"{salutation}, it's been {days_since} days since the {service} trial. Time for follow-up. Should I send the conversion offer?"
+            rationale = "Trial follow-up with specific timing and conversion focus."
+
+        elif t_kind == "supply_alert":
+            item = t_payload.get("item", "inventory item")
+            status = t_payload.get("status", "low stock")
+            body = f"{salutation}, {item} is showing {status}. This affects your operations. Want me to help with supplier coordination?"
+            rationale = "Supply chain alert with operational impact and assistance offer."
+
+        elif t_kind == "chronic_refill_due":
+            medication = t_payload.get("medication", "prescription")
+            patient_count = t_payload.get("patient_count", "several patients")
+            body = f"{salutation}, {patient_count} need {medication} refills this week. Should I send reminder notifications to ensure continuity?"
+            rationale = "Medication management with patient care focus and proactive service."
+
+        elif t_kind == "category_seasonal":
+            trend = t_payload.get("trend", "seasonal demand")
+            impact = t_payload.get("impact", "increased interest")
+            body = f"{salutation}, {trend} is showing {impact} in your area. Your '{offer_title}' aligns perfectly. Ready to capitalize?"
+            rationale = "Seasonal trend analysis with strategic offer alignment."
+
+        elif t_kind == "gbp_unverified":
+            verification_benefit = "improved visibility and customer trust"
+            body = f"{salutation}, your Google Business Profile needs verification. This unlocks {verification_benefit}. Want me to guide you through the 2-minute process?"
+            rationale = "Profile optimization with specific benefits and easy action path."
+
+        elif t_kind == "competitor_opened_nearby":
+            distance = t_payload.get("distance", "nearby")
+            competitor_type = t_payload.get("type", "competitor")
+            body = f"{salutation}, a new {competitor_type} opened {distance}. Time to strengthen your position with '{offer_title}'. Should we launch a defensive campaign?"
+            rationale = "Competitive threat with strategic response and defensive positioning."
+
+        elif t_kind == "perf_spike":
+            metric = t_payload.get("metric", "engagement")
+            increase = t_payload.get("increase_pct", 20)
+            body = f"{salutation}, your {metric} spiked {increase}% this week! Perfect momentum to amplify with '{offer_title}'. Strike while it's hot?"
+            rationale = "Performance momentum with amplification opportunity and urgency."
+
+        elif t_kind == "ipl_match_today":
+            match_details = t_payload.get("match", "IPL match")
+            crowd_impact = "increased foot traffic expected"
+            body = f"{salutation}, {match_details} today means {crowd_impact}. Your '{offer_title}' could capture this surge. Ready to go live?"
+            rationale = "Event-driven opportunity with crowd dynamics and immediate action."
+
+        elif t_kind == "review_theme_emerging":
+            theme = t_payload.get("theme", "service quality")
+            sentiment = t_payload.get("sentiment", "positive")
+            body = f"{salutation}, reviews are highlighting {theme} ({sentiment} trend). This validates your '{offer_title}' positioning. Want to amplify this momentum?"
+            rationale = "Review analysis with validation of current strategy and amplification opportunity."
+
+        elif t_kind == "milestone_reached":
+            milestone = t_payload.get("milestone", "business milestone")
+            achievement = t_payload.get("achievement", "significant growth")
+            body = f"{salutation}, congratulations on {milestone}! This {achievement} deserves celebration. Should we create a milestone campaign with '{offer_title}'?"
+            rationale = "Achievement recognition with celebration marketing and offer integration."
+
+        elif t_kind == "winback_eligible":
+            segment = t_payload.get("segment", "lapsed customers")
+            timeframe = t_payload.get("optimal_window", "this week")
+            body = f"{salutation}, {segment} are in the optimal winback window {timeframe}. Your '{offer_title}' could re-engage them. Launch the campaign?"
+            rationale = "Winback timing optimization with specific segment and offer matching."
+
+        elif t_kind == "curious_ask_due":
+            inquiry_type = t_payload.get("inquiry_type", "service inquiry")
+            response_window = t_payload.get("response_window", "24 hours")
+            body = f"{salutation}, you have pending {inquiry_type} requiring response within {response_window}. Should I draft personalized responses?"
+            rationale = "Customer inquiry management with time sensitivity and personalized service."
+
         else:
-            # Fallback with context-specific details
-            if category_slug == "dentists":
-                body = f"{salutation}, I have an update about {t_kind.replace('_', ' ')} that affects your practice. Want me to review the details with you?"
-            elif category_slug == "salons":
-                body = f"{salutation}, there's a {t_kind.replace('_', ' ')} opportunity for your salon. Should we discuss it?"
-            elif category_slug == "restaurants":
-                body = f"{salutation}, I found something about {t_kind.replace('_', ' ')} that could help your restaurant. Want the details?"
-            elif category_slug == "gyms":
-                body = f"{salutation}, there's a {t_kind.replace('_', ' ')} update relevant to your gym. Should we review it?"
-            elif category_slug == "pharmacies":
-                body = f"{salutation}, I have a {t_kind.replace('_', ' ')} update for your pharmacy. Want me to explain?"
-            else:
-                body = f"{salutation}, I have an important update about {t_kind.replace('_', ' ')}. Should we review this together?"
+            # Enhanced fallback with more context
+            payload_details = []
+            for key, value in t_payload.items():
+                if key not in ["merchant_id", "customer_id", "category"] and isinstance(value, (str, int, float)):
+                    if len(str(value)) < 30:  # Only include short, meaningful values
+                        payload_details.append(f"{key.replace('_', ' ')}: {value}")
             
-            rationale = f"Category-specific {t_kind} update with clear engagement prompt."
+            details_str = " | ".join(payload_details[:2])  # Limit to 2 most relevant details
+            
+            if details_str:
+                body = f"{salutation}, I have a {t_kind.replace('_', ' ')} update: {details_str}. This could impact your {category_slug.rstrip('s')} business. Should we review it together?"
+                rationale = f"Specific {t_kind} update with payload details and category context."
+            else:
+                body = f"{salutation}, I have an important {t_kind.replace('_', ' ')} update for your {category_slug.rstrip('s')} business. Want to review the details?"
+                rationale = f"Category-specific {t_kind} update with engagement prompt."
 
         # Ensure we have a body
         if not body:
