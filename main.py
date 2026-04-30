@@ -153,23 +153,21 @@ async def tick(data: TickPayload):
             digest = next((d for d in digest_items if d.get("id") == top_id), None)
             
             if digest and category_slug == "dentists":
-                source = digest.get('source', 'JIDA')
+                source = digest.get('source', 'JIDA')  # Already includes page: "JIDA Oct 2026, p.14"
                 title = digest.get('title', 'new research')
-                trial_n = digest.get('trial_n', '')
-                page = digest.get('page', '')
+                trial_n = digest.get('trial_n', 0)
                 segment = digest.get('patient_segment', 'patients')
                 
                 # Build with ALL data points
-                citation = f"{source} p.{page}" if page else source
                 trial_info = f"(n={trial_n:,})" if trial_n else ""
                 
                 # Use actual patient count for specificity
                 if high_risk_count > 0:
-                    body = f"{salutation}, {citation}: '{title}' {trial_info}. Affects your {high_risk_count} high-risk {segment}. Want 2-min abstract + patient WhatsApp draft? (90sec turnaround)"
+                    body = f"{salutation}, {source}: '{title}' {trial_info}. Affects your {high_risk_count} high-risk {segment.replace('_', ' ')}. Want 2-min abstract + patient WhatsApp draft? (90sec)"
                 else:
-                    body = f"{salutation}, {citation}: '{title}' {trial_info}. Relevant for {segment}. Want 2-min abstract + patient communication draft?"
+                    body = f"{salutation}, {source}: '{title}' {trial_info}. Relevant for {segment.replace('_', ' ')}. Want 2-min abstract + patient draft?"
                 
-                rationale = f"Research with full citation ({citation}, trial n={trial_n}), tied to merchant's {high_risk_count} patients, effort externalized (90sec), clear CTA."
+                rationale = f"Research with full citation ({source}, n={trial_n}), tied to merchant's {high_risk_count} patients, effort externalized (90sec), clear CTA."
             else:
                 body = f"{salutation}, new clinical research for {locality} practices. Want summary + patient communication template?"
                 rationale = "Research update with locality context."
