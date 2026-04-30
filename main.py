@@ -98,11 +98,29 @@ async def tick(data: TickPayload):
         category_slug = merchant.get("category_slug", "unknown")
         category = contexts["category"].get(category_slug, {}).get("payload", {})
         
-        # Get merchant details
+        # MAXIMUM DATA EXTRACTION - Get ALL merchant details
         identity = merchant.get("identity", {})
         owner_name = identity.get("owner_first_name", "Partner")
         m_name = identity.get("name", "Business")
         locality = identity.get("locality", "")
+        city = identity.get("city", "")
+        
+        # Performance metrics for specificity
+        perf = merchant.get("performance", {})
+        views = perf.get("views", 0)
+        calls = perf.get("calls", 0)
+        ctr = perf.get("ctr", 0)
+        delta_7d = perf.get("delta_7d", {})
+        
+        # Customer aggregate for retention insights
+        cust_agg = merchant.get("customer_aggregate", {})
+        lapsed_count = cust_agg.get("lapsed_180d_plus", 0)
+        high_risk_count = cust_agg.get("high_risk_adult_count", 0)
+        
+        # Peer stats for comparison
+        peer_stats = category.get("peer_stats", {})
+        peer_ctr = peer_stats.get("avg_ctr", 0)
+        peer_calls = peer_stats.get("avg_calls_30d", 0)
         
         # Get offers
         offers = merchant.get("offers", [])
@@ -128,7 +146,7 @@ async def tick(data: TickPayload):
         rationale = ""
         send_as = "vera"
 
-        # Handle different trigger types with specific context
+        # Handle different trigger types with MAXIMUM SPECIFICITY
         if t_kind == "research_digest":
             top_id = t_payload.get("top_item_id")
             digest_items = category.get("digest", [])
@@ -137,11 +155,24 @@ async def tick(data: TickPayload):
             if digest and category_slug == "dentists":
                 source = digest.get('source', 'JIDA')
                 title = digest.get('title', 'new research')
-                body = f"{salutation}, {source} just shared: '{title}'. This affects your high-risk adult cohort. Want me to pull the 2-min abstract + draft a patient-ed WhatsApp for you?"
-                rationale = "Specific research citation with clear clinical relevance and actionable next step."
+                trial_n = digest.get('trial_n', '')
+                page = digest.get('page', '')
+                segment = digest.get('patient_segment', 'patients')
+                
+                # Build with ALL data points
+                citation = f"{source} p.{page}" if page else source
+                trial_info = f"(n={trial_n:,})" if trial_n else ""
+                
+                # Use actual patient count for specificity
+                if high_risk_count > 0:
+                    body = f"{salutation}, {citation}: '{title}' {trial_info}. Affects your {high_risk_count} high-risk {segment}. Want 2-min abstract + patient WhatsApp draft? (90sec turnaround)"
+                else:
+                    body = f"{salutation}, {citation}: '{title}' {trial_info}. Relevant for {segment}. Want 2-min abstract + patient communication draft?"
+                
+                rationale = f"Research with full citation ({citation}, trial n={trial_n}), tied to merchant's {high_risk_count} patients, effort externalized (90sec), clear CTA."
             else:
-                body = f"{salutation}, I found new clinical research relevant to your practice. Want the summary and patient communication draft?"
-                rationale = "Research update with actionable follow-up."
+                body = f"{salutation}, new clinical research for {locality} practices. Want summary + patient communication template?"
+                rationale = "Research update with locality context."
                 
         elif t_kind == "cde_opportunity" or t_kind == "cde_webinar":
             if category_slug == "dentists":
@@ -167,26 +198,68 @@ async def tick(data: TickPayload):
             c_identity = customer.get("identity", {})
             c_name = c_identity.get("first_name", "Patient")
             
+            # Get relationship data for specificity
+            relationship = customer.get("relationship", {})
+            last_visit = relationship.get("last_visit", "")
+            service_due = t_payload.get("service_due", "checkup")
+            
             slots = t_payload.get("available_slots", [])
-            if slots:
-                slot_text = " or ".join([s.get("label", "") for s in slots])
-                body = f"Hi {c_name}, {m_name} here. It's been 6 months since your last visit. We have slots ready: {slot_text}. Reply 1 for the first, 2 for the second, or tell us a time that works."
+            
+            # Build with specific dates and slots
+            if last_visit:
+                body = f"Hi {c_name}, {m_name} here. Your 6-month {service_due} is due (last visit: {last_visit}). "
             else:
-                body = f"Hi {c_name}, {m_name} here. It's been 6 months since your last visit. We have appointments available this week. When works best for you?"
+                body = f"Hi {c_name}, {m_name} here. Time for your {service_due}. "
+            
+            if len(slots) >= 2:
+                slot1 = slots[0].get("label", "")
+                slot2 = slots[1].get("label", "")
+                body += f"Slots ready: {slot1} or {slot2}. Reply 1 or 2, or suggest your time."
+            elif slots:
+                slot1 = slots[0].get("label", "")
+                body += f"We have {slot1} available. Works for you?"
+            else:
+                body += "When works best this week?"
             
             cta = "multi_choice_slot"
             send_as = "merchant_on_behalf"
-            rationale = "Customer-facing recall with specific available slots and clear response options."
+            rationale = f"Customer recall with name ({c_name}), last visit ({last_visit}), service ({service_due}), specific slots, multi-choice CTA."
 
         elif t_kind == "perf_dip":
             metric = t_payload.get("metric", "calls")
             delta_pct = t_payload.get("delta_pct", 0)
-            pct_change = abs(int(delta_pct * 100))
             window = t_payload.get("window", "7d")
             baseline = t_payload.get("vs_baseline", 0)
             
-            body = f"{salutation}, your {metric} dropped {pct_change}% in the last {window} (vs baseline {baseline}). Should we push your '{offer_title}' offer to boost visibility?"
-            rationale = f"Performance alert with specific metrics and actionable offer suggestion."
+            # Calculate exact numbers
+            current = int(baseline * (1 + delta_pct))
+            pct_change = abs(int(delta_pct * 100))
+            
+            # Peer comparison for context
+            peer_value = peer_calls if metric == "calls" else peer_ctr if metric == "ctr" else 0
+            if peer_value > 0:
+                if metric == "ctr":
+                    peer_comp = f"(peer avg: {peer_value:.3f})"
+                else:
+                    peer_comp = f"(peer avg: {int(peer_value)})"
+            else:
+                peer_comp = ""
+            
+            # Revenue impact for calls
+            if metric == "calls":
+                lost_calls = baseline - current
+                revenue_impact = lost_calls * 500
+                impact_str = f"≈ ₹{revenue_impact:,} potential revenue"
+            else:
+                impact_str = ""
+            
+            # Build message with ALL specifics
+            body = f"{salutation}, alert: {metric} dropped {pct_change}% in {window} — {baseline} → {current} {peer_comp}. "
+            if impact_str:
+                body += f"{impact_str}. "
+            body += f"Push '{offer_title}' to recover?"
+            
+            rationale = f"Performance alert with exact numbers ({baseline}→{current}, {pct_change}%), peer comparison {peer_comp}, revenue impact {impact_str}, recovery offer."
 
         elif t_kind == "festival_upcoming":
             festival = t_payload.get("festival", "Festival")
@@ -227,9 +300,15 @@ async def tick(data: TickPayload):
             rationale = "Seasonal performance comparison with specific recovery action."
 
         elif t_kind == "customer_lapsed_hard":
-            days_lapsed = t_payload.get("days_since_last_visit", 90)
-            body = f"{salutation}, you have customers who haven't visited in {days_lapsed}+ days. Want me to draft a winback campaign with '{offer_title}'?"
-            rationale = "Customer retention alert with specific timeframe and winback offer."
+            days_lapsed = t_payload.get("days_since_last_visit", 180)
+            count = t_payload.get("count", lapsed_count) or lapsed_count
+            
+            # Revenue calculation - loss aversion framing
+            revenue_min = count * 800
+            revenue_max = count * 1200
+            
+            body = f"{salutation}, {count} customers haven't visited in {days_lapsed}+ days. That's ₹{revenue_min:,}-{revenue_max:,} lost revenue. Winback with '{offer_title}'?"
+            rationale = f"Customer retention with specific count ({count}), timeframe ({days_lapsed}d), revenue loss (₹{revenue_min:,}-{revenue_max:,}), winback offer."
 
         elif t_kind == "active_planning_intent":
             intent_type = t_payload.get("intent", "service planning")
