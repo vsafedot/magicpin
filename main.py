@@ -1,4 +1,4 @@
-﻿import re
+import re
 import time
 import os
 from datetime import datetime
@@ -194,23 +194,20 @@ async def tick(data: TickPayload):
         elif t_kind == "regulation_change" or t_kind == "compliance_dci_radiograph":
             if category_slug == "dentists":
                 # Get deadline - try multiple sources
-                deadline = t_data.get("deadline_iso", "") or t_data.get("deadline", "") or t_payload.get("deadline_iso", "")
+                deadline = t_data.get("deadline_iso", "") or t_data.get("deadline", "") or t_payload.get("deadline_iso", "") or "upcoming"
                 top_id = t_data.get("top_item_id", "")
                 
                 # Get digest for more details
                 digest_items = category.get("digest", [])
                 digest = next((d for d in digest_items if d.get("id") == top_id), None)
                 
-                if digest and deadline:
+                if digest:
                     title = digest.get("title", "DCI compliance update")
                     body = f"{salutation}, urgent: {title}. Deadline: {deadline}. Want me to audit your X-ray setup?"
                     rationale = f"Compliance alert with specific deadline ({deadline}), digest title, actionable audit offer."
-                elif deadline:
+                else:
                     body = f"{salutation}, urgent DCI compliance update. Deadline: {deadline}. Affects radiograph protocols. Want me to review your SOPs?"
                     rationale = f"Compliance alert with specific deadline ({deadline}), actionable review offer."
-                else:
-                    body = f"{salutation}, urgent DCI compliance update. Affects radiograph protocols. Want me to review your SOPs?"
-                    rationale = "Compliance alert with actionable review offer."
             else:
                 body = f"{salutation}, regulatory update affecting {category_slug} in {city}. Want the compliance checklist?"
                 rationale = "Regulatory compliance with location context."
@@ -260,52 +257,38 @@ async def tick(data: TickPayload):
 
         elif t_kind == "perf_dip":
             metric = t_data.get("metric", "calls")
-            delta_pct = t_data.get("delta_pct", 0)
-            if delta_pct == 0:
-                delta_pct = merchant.get("performance", {}).get("delta_7d", {}).get(f"{metric}_pct", 0)
+            # Pull delta_pct and baseline DIRECTLY from trigger payload first
+            delta_pct = t_data.get("delta_pct") or t_payload.get("delta_pct") or 0
+            baseline = t_data.get("vs_baseline") or t_payload.get("vs_baseline") or 0
             window = t_data.get("window", "7d")
-            baseline = t_data.get("vs_baseline", 0)
-            
-            # If baseline is 0, try to get from merchant performance
-            if baseline == 0:
-                if metric == "calls":
-                    baseline = calls
-                elif metric == "views":
-                    baseline = views
-            
-            # Only calculate if we have valid data
+
+            # Only fall back to merchant perf when payload has nothing
+            if not delta_pct:
+                delta_pct = merchant.get("performance", {}).get("delta_7d", {}).get(f"{metric}_pct", 0)
+            if not baseline:
+                baseline = calls if metric == "calls" else views if metric == "views" else 0
+
             if baseline > 0 and delta_pct != 0:
                 current = int(baseline * (1 + delta_pct))
                 pct_change = abs(int(delta_pct * 100))
-                
-                # Peer comparison for context
+
                 peer_value = peer_calls if metric == "calls" else peer_ctr if metric == "ctr" else 0
+                peer_comp = ""
                 if peer_value > 0:
-                    if metric == "ctr":
-                        peer_comp = f"(peer avg: {peer_value:.3f})"
-                    else:
-                        peer_comp = f"(peer avg: {int(peer_value)})"
-                else:
-                    peer_comp = ""
-                
-                # Revenue impact for calls
+                    peer_comp = f"(peer avg: {peer_value:.3f})" if metric == "ctr" else f"(peer avg: {int(peer_value)})"
+
+                impact_str = ""
                 if metric == "calls" and current < baseline:
                     lost_calls = baseline - current
-                    revenue_impact = lost_calls * 500
-                    impact_str = f"≈ ₹{revenue_impact:,} potential revenue"
-                else:
-                    impact_str = ""
-                
-                # Build message with ALL specifics
-                body = f"{salutation}, alert: {metric} dropped {pct_change}% in {window} — {baseline} → {current} {peer_comp}. "
-                if impact_str:
-                    body += f"{impact_str}. "
-                body += f"Push '{offer_title}' to recover?"
-                
+                    impact_str = f"≈ ₹{lost_calls * 500:,} lost revenue. "
+
+                body = f"{salutation}, alert: {metric} dropped {pct_change}% in {window} — {baseline} → {current} {peer_comp}. {impact_str}Push '{offer_title}' to recover?"
                 rationale = f"Performance alert with exact numbers ({baseline}→{current}, {pct_change}%), peer comparison, revenue impact, recovery offer."
             else:
-                # Fallback if no valid data
-                body = f"{salutation}, your {metric} performance needs attention. Push '{offer_title}' to recover?"
+                # Describe dip using merchant's own delta_7d as fallback
+                dip_pct = abs(int(delta_pct * 100)) if delta_pct else 0
+                pct_str = f"{dip_pct}% " if dip_pct else ""
+                body = f"{salutation}, your {metric} {pct_str}performance dip needs attention. Push '{offer_title}' to recover?"
                 rationale = f"Performance alert for {metric} with recovery offer."
 
         elif t_kind == "festival_upcoming":
@@ -326,7 +309,7 @@ async def tick(data: TickPayload):
             plan = t_data.get("plan", "Pro")
             amount = t_data.get("renewal_amount", 0)
             
-            body = f"{salutation}, your {plan} plan expires in {days_remaining} days. Renewal is â‚¹{amount}. Want me to process it now to avoid any service interruption?"
+            body = f"{salutation}, your {plan} plan expires in {days_remaining} days. Renewal is ₹{amount}. Want me to process it now to avoid any service interruption?"
             rationale = "Renewal urgency with specific timeline and amount."
 
         elif t_kind == "wedding_package_followup":
@@ -348,100 +331,166 @@ async def tick(data: TickPayload):
 
         elif t_kind == "customer_lapsed_hard":
             days_lapsed = t_data.get("days_since_last_visit", 180)
+            prev_focus = t_data.get("previous_focus", "").replace("_", " ")
+            prev_months = t_data.get("previous_membership_months", 0)
             count = t_data.get("count", lapsed_count) or lapsed_count
-            
-            # Revenue calculation - loss aversion framing
-            revenue_min = count * 800
-            revenue_max = count * 1200
-            
-            body = f"{salutation}, {count} customers haven't visited in {days_lapsed}+ days. That's â‚¹{revenue_min:,}-{revenue_max:,} lost revenue. Winback with '{offer_title}'?"
-            rationale = f"Customer retention with specific count ({count}), timeframe ({days_lapsed}d), revenue loss (â‚¹{revenue_min:,}-{revenue_max:,}), winback offer."
+
+            if customer_id:
+                # Customer-scoped: send directly to customer
+                customer = contexts["customer"].get(customer_id, {}).get("payload", {})
+                c_name = customer.get("identity", {}).get("name", "").split()[0] or "there"
+                focus_str = f" You were working on {prev_focus}." if prev_focus else ""
+                body = f"Hi {c_name}, we miss you at {m_name}!{focus_str} It's been {days_lapsed} days. Come back with '{offer_title}' — exclusive for you. Book now?"
+                send_as = "merchant_on_behalf"
+                cta = "binary_yes_no"
+                rationale = f"Customer lapsed {days_lapsed}d. Focus: {prev_focus}. Personal winback with exclusive offer."
+            else:
+                # Merchant-scoped: alert the merchant
+                revenue_min = count * 800
+                revenue_max = count * 1200
+                body = f"{salutation}, {count} customers haven't visited in {days_lapsed}+ days — ₹{revenue_min:,}–{revenue_max:,} at risk. Winback with '{offer_title}'?"
+                rationale = f"Lapsed {count} customers, {days_lapsed}d. Revenue risk ₹{revenue_min:,}–{revenue_max:,}. Loss-aversion winback."
 
         elif t_kind == "active_planning_intent":
-            intent_type = t_data.get("intent", "service planning")
-            body = f"{salutation}, I detected {intent_type} activity from your customers. Perfect time to promote '{offer_title}'. Should we create a targeted campaign?"
-            rationale = "Customer intent detection with timely offer promotion."
+            intent_topic = t_data.get("intent_topic", "service planning").replace("_", " ")
+            last_msg = t_data.get("merchant_last_message", "")
+            # Bot should ACTION immediately — merchant already said yes
+            body = f"{salutation}, picking up from your question about '{intent_topic}': here's my recommendation — should I draft the full plan with pricing, timeline, and a GBP post? Ready in 90 seconds."
+            rationale = f"Active planning intent: '{intent_topic}'. Merchant already engaged. Bot switches to action mode immediately."
 
         elif t_kind == "trial_followup":
-            service = t_data.get("service", "trial service")
-            days_since = t_data.get("days_since_trial", 7)
-            body = f"{salutation}, it's been {days_since} days since the {service} trial. Time for follow-up. Should I send the conversion offer?"
-            rationale = "Trial follow-up with specific timing and conversion focus."
+            trial_date = t_data.get("trial_date", "")
+            next_sessions = t_data.get("next_session_options", [])
+            slot_str = ""
+            if next_sessions:
+                slot_label = next_sessions[0].get("label", "") if isinstance(next_sessions[0], dict) else str(next_sessions[0])
+                slot_str = f" Next slot: {slot_label}." if slot_label else ""
+            trial_str = f" (trial was {trial_date})" if trial_date else ""
+            body = f"{salutation}, following up on the trial{trial_str}.{slot_str} Ready to join the full program? Reply YES to confirm."
+            rationale = f"Trial followup{trial_str}. Specific next slot offered. Clear yes/no CTA."
 
         elif t_kind == "supply_alert":
-            item = t_data.get("item", "inventory item")
-            status = t_data.get("status", "low stock")
-            body = f"{salutation}, {item} is showing {status}. This affects your operations. Want me to help with supplier coordination?"
-            rationale = "Supply chain alert with operational impact and assistance offer."
+            molecule = t_data.get("molecule", t_data.get("item", "medication"))
+            batches = t_data.get("affected_batches", [])
+            manufacturer = t_data.get("manufacturer", "")
+            batch_str = f" (batches: {', '.join(batches[:2])})" if batches else ""
+            mfr_str = f" by {manufacturer}" if manufacturer else ""
+            body = f"{salutation}, urgent: voluntary recall on {molecule}{mfr_str}{batch_str}. Check your stock now. Want the affected customer list to notify them?"
+            rationale = f"Supply alert: {molecule} recall{mfr_str}. Specific batches cited. Patient safety action + customer list offer."
 
         elif t_kind == "chronic_refill_due":
-            medication = t_data.get("medication", "prescription")
-            patient_count = t_data.get("patient_count", "several patients")
-            body = f"{salutation}, {patient_count} need {medication} refills this week. Should I send reminder notifications to ensure continuity?"
-            rationale = "Medication management with patient care focus and proactive service."
+            molecules = t_data.get("molecule_list", [t_data.get("medication", "prescription")])
+            last_refill = t_data.get("last_refill", "")
+            runs_out = t_data.get("stock_runs_out_iso", "")
+            delivery_saved = t_data.get("delivery_address_saved", False)
+            mol_str = ", ".join(molecules[:3]) if isinstance(molecules, list) else str(molecules)
+            refill_str = f" (last refill: {last_refill})" if last_refill else ""
+            delivery_str = " I can dispatch immediately — address on file." if delivery_saved else " Reply to confirm refill."
+            body = f"{salutation}, refill due: {mol_str}{refill_str}. Stock runs out soon.{delivery_str}"
+            rationale = f"Chronic refill: {mol_str}. Last refill {last_refill}. Delivery={delivery_saved}. Specific meds + urgency."
 
         elif t_kind == "category_seasonal":
-            trend = t_data.get("trend", "seasonal demand")
-            impact = t_data.get("impact", "increased interest")
-            body = f"{salutation}, {trend} is showing {impact} in your area. Your '{offer_title}' aligns perfectly. Ready to capitalize?"
-            rationale = "Seasonal trend analysis with strategic offer alignment."
+            season = t_data.get("season", "season").replace("_", " ")
+            trends = t_data.get("trends", [])
+            shelf_action = t_data.get("shelf_action_recommended", False)
+            if trends:
+                # Parse trend strings like "ORS_demand_+40"
+                top_trends = []
+                for t in trends[:2]:
+                    parts = str(t).replace("_demand_", ": ").replace("_", " ")
+                    top_trends.append(parts)
+                trend_str = " | ".join(top_trends)
+                body = f"{salutation}, {season} demand shift: {trend_str}. Restock and promote '{offer_title}' to capture this surge now?"
+            else:
+                body = f"{salutation}, {season} trends are shifting. Your '{offer_title}' aligns perfectly — ready to capitalize?"
+            rationale = f"Seasonal trend for {season}: {trends[:2]}. Shelf action={shelf_action}. Specific data-driven ask."
 
         elif t_kind == "gbp_unverified":
-            verification_benefit = "improved visibility and customer trust"
-            body = f"{salutation}, your Google Business Profile needs verification. This unlocks {verification_benefit}. Want me to guide you through the 2-minute process?"
-            rationale = "Profile optimization with specific benefits and easy action path."
+            uplift_pct = int(t_data.get("estimated_uplift_pct", 0) * 100)
+            uplift_str = f"up to {uplift_pct}% more visibility" if uplift_pct else "improved visibility and trust"
+            body = f"{salutation}, your Google Business Profile isn't verified — this costs you {uplift_str}. Takes 2 minutes. Want me to walk you through it now?"
+            rationale = f"GBP unverified: {uplift_pct}% visibility uplift at stake. Specific benefit + 2-min effort framing."
 
-        elif t_kind in ["competitor_opened_nearby", "competitor"]:
-            distance = t_data.get("distance", "nearby")
-            competitor_type = t_data.get("type", "competitor")
-            body = f"{salutation}, a new {competitor_type} opened {distance}. Time to strengthen your position with '{offer_title}'. Should we launch a defensive campaign?"
-            rationale = "Competitive threat with strategic response and defensive positioning."
+        elif t_kind in ["competitor_opened_nearby", "competitor", "competitor_opened"]:
+            comp_name = t_data.get("competitor_name", "a competitor")
+            distance_km = t_data.get("distance_km", "")
+            their_offer = t_data.get("their_offer", "")
+            dist_str = f"{distance_km}km away" if distance_km else "nearby"
+            offer_str = f" (their offer: {their_offer})" if their_offer else ""
+            body = f"{salutation}, {comp_name} opened {dist_str}{offer_str}. Counter with '{offer_title}' before they take your customers. Launch defensive campaign?"
+            rationale = f"Competitive threat: {comp_name} {dist_str}{offer_str}. Specific counter-offer proposed."
 
         elif t_kind == "perf_spike":
-            metric = t_data.get("metric", "engagement")
-            increase = t_data.get("increase_pct", 20)
-            body = f"{salutation}, your {metric} spiked {increase}% this week! Perfect momentum to amplify with '{offer_title}'. Strike while it's hot?"
-            rationale = "Performance momentum with amplification opportunity and urgency."
+            metric = t_data.get("metric", "calls")
+            delta_pct = t_data.get("delta_pct", 0)
+            baseline = t_data.get("vs_baseline", 0)
+            driver = t_data.get("likely_driver", "").replace("_", " ")
+            increase = abs(int(delta_pct * 100)) if delta_pct else t_data.get("increase_pct", 20)
+            current = int(baseline * (1 + delta_pct)) if baseline and delta_pct else 0
+            spike_str = f"{baseline} → {current} " if baseline and current else ""
+            driver_str = f" (driver: {driver})" if driver else ""
+            body = f"{salutation}, great news: {metric} up {increase}% this week — {spike_str}{driver_str}. Lock in this momentum with '{offer_title}'. Strike while it's hot?"
+            rationale = f"Performance spike: {metric} +{increase}%, {spike_str}{driver_str}. Amplification opportunity."
 
         elif t_kind == "ipl_match_today":
             match_details = t_data.get("match", "IPL match")
-            crowd_impact = "increased foot traffic expected"
-            body = f"{salutation}, {match_details} today means {crowd_impact}. Your '{offer_title}' could capture this surge. Ready to go live?"
-            rationale = "Event-driven opportunity with crowd dynamics and immediate action."
+            venue = t_data.get("venue", "")
+            is_weeknight = t_data.get("is_weeknight", False)
+            venue_str = f" at {venue}" if venue else ""
+            timing_str = "Weeknight crowd" if is_weeknight else "Match day crowd"
+            body = f"{salutation}, {match_details} tonight{venue_str}. {timing_str} = surge in orders. Push '{offer_title}' right now — match starts soon?"
+            rationale = f"IPL match day: {match_details}{venue_str}. {timing_str} impact. Time-sensitive offer push."
 
-        elif t_kind in ["review_theme_emerging", "review_theme"]:
-            theme = t_data.get("theme", "service quality")
-            sentiment = t_data.get("sentiment", "positive")
-            body = f"{salutation}, reviews are highlighting {theme} ({sentiment} trend). This validates your '{offer_title}' positioning. Want to amplify this momentum?"
-            rationale = "Review analysis with validation of current strategy and amplification opportunity."
+        elif t_kind in ["review_theme_emerging", "review_theme", "review_theme_emerged"]:
+            theme = t_data.get("theme", "service quality").replace("_", " ")
+            occurrences = t_data.get("occurrences_30d", 0)
+            trend = t_data.get("trend", "")
+            common_quote = t_data.get("common_quote", "")
+            occ_str = f" ({occurrences}x in 30d)" if occurrences else ""
+            quote_str = f' — customers say: "{common_quote[:60]}"' if common_quote else ""
+            body = f"{salutation}, review theme: '{theme}'{occ_str}{quote_str}. Address this to protect your rating. Want a response template?"
+            rationale = f"Review theme '{theme}' flagged {occurrences}x in 30d. Specific quote cited, actionable response offered."
 
         elif t_kind == "milestone_reached":
-            milestone = t_data.get("milestone", "business milestone")
-            achievement = t_data.get("achievement", "significant growth")
-            body = f"{salutation}, congratulations on {milestone}! This {achievement} deserves celebration. Should we create a milestone campaign with '{offer_title}'?"
-            rationale = "Achievement recognition with celebration marketing and offer integration."
+            metric = t_data.get("metric", "reviews").replace("_", " ")
+            value_now = t_data.get("value_now", 0)
+            milestone_value = t_data.get("milestone_value", 0)
+            is_imminent = t_data.get("is_imminent", False)
+            gap = milestone_value - value_now if milestone_value > value_now else 0
+            if gap > 0:
+                body = f"{salutation}, you're {gap} {metric} away from {milestone_value}! This milestone brings a badge boost. Push '{offer_title}' to hit it this week?"
+            else:
+                body = f"{salutation}, you just hit {milestone_value} {metric}! Celebrate with '{offer_title}' — ride the momentum. Should I draft the post?"
+            rationale = f"Milestone {milestone_value} {metric} (currently {value_now}). Imminent={is_imminent}. Urgency + celebration framing."
 
         elif t_kind == "winback_eligible":
-            segment = t_data.get("segment", "lapsed customers")
-            timeframe = t_data.get("optimal_window", "this week")
-            body = f"{salutation}, {segment} are in the optimal winback window {timeframe}. Your '{offer_title}' could re-engage them. Launch the campaign?"
-            rationale = "Winback timing optimization with specific segment and offer matching."
+            days_expiry = t_data.get("days_since_expiry", 0)
+            lapsed_added = t_data.get("lapsed_customers_added_since_expiry", 0)
+            dip_pct = abs(int(t_data.get("perf_dip_pct", 0) * 100))
+            body = f"{salutation}, {lapsed_added} customers lapsed in the {days_expiry} days since your plan expired, and calls are down {dip_pct}%. Reactivate today with '{offer_title}' to win them back. Shall I send the campaign?"
+            rationale = f"Winback: {lapsed_added} lapsed customers, {dip_pct}% call dip, {days_expiry}d since expiry. Loss-aversion framing with specific offer."
 
         elif t_kind == "curious_ask_due":
-            inquiry_type = t_data.get("inquiry_type", "service inquiry")
-            response_window = t_data.get("response_window", "24 hours")
-            body = f"{salutation}, you have pending {inquiry_type} requiring response within {response_window}. Should I draft personalized responses?"
-            rationale = "Customer inquiry management with time sensitivity and personalized service."
+            ask_template = t_data.get("ask_template", "service inquiry").replace("_", " ")
+            body = f"{salutation}, quick check: {ask_template}? This insight helps me target the right customers for you. 10-second reply?"
+            rationale = f"Engagement curiosity ask: '{ask_template}', low friction, 10-second ask."
+
+        elif t_kind == "dormant_with_vera":
+            days_dormant = t_data.get("days_since_last_merchant_message", 30)
+            last_topic = t_data.get("last_topic", "your profile").replace("_", " ")
+            body = f"{salutation}, it's been {days_dormant} days since we last connected (topic: {last_topic}). A lot can change in a month — want a quick business health check?"
+            rationale = f"Re-engagement after {days_dormant} days dormancy. References last topic, low-friction health check CTA."
 
         else:
             # Enhanced fallback with more context
             payload_details = []
             for key, value in t_payload.items():
                 if key not in ["merchant_id", "customer_id", "category", "kind", "scope"] and isinstance(value, (str, int, float)):
-                    if len(str(value)) < 30:  # Only include short, meaningful values
-                        payload_details.append(f"{key.replace('_', ' ')}: {value}")
+                    if len(str(value)) < 20:
+                        readable_key = key.replace("_", " ")
+                        payload_details.append(f"{readable_key}: {value}")
             
-            details_str = " | ".join(payload_details[:2])  # Limit to 2 most relevant details
+            details_str = " | ".join(payload_details[:2])
             
             if details_str:
                 body = f"{salutation}, I have a {t_kind.replace('_', ' ')} update: {details_str}. This could impact your {category_slug.rstrip('s')} business. Should we review it together?"
@@ -492,13 +541,14 @@ async def reply(data: ReplyPayload):
         "received your message",
         "auto-reply",
         "out of office",
-        "currently unavailable"
+        "currently unavailable",
+        "message received"
     ]
     
     if any(pattern in msg_lower for pattern in auto_reply_patterns):
         return {
             "action": "end",
-            "rationale": "Auto-reply detected; ending conversation to prevent spam loop."
+            "rationale": "Auto-reply/out-of-office message detected; ending conversation to prevent looping."
         }
         
     # Get merchant context for personalized responses
@@ -514,12 +564,17 @@ async def reply(data: ReplyPayload):
 
     if data.from_role == "customer":
         customer = contexts["customer"].get(data.customer_id, {}).get("payload", {}) if data.customer_id else {}
-        c_name = customer.get("identity", {}).get("name", "Patient")
-        
-        if any(word in msg_lower for word in ["yes", "book", "confirm", "sure", "ok", "works", "please"]):
+        c_name_raw = customer.get("identity", {}).get("name", "")
+        # Extract first name safely
+        if c_name_raw:
+            c_name = c_name_raw.split("(")[0].strip().split()[0]
+        else:
+            c_name = "there"
+
+        if any(word in msg_lower for word in ["yes", "book", "confirm", "sure", "ok", "works", "please", "1", "2"]):
             return {
                 "action": "send",
-                "body": f"Perfect {c_name}, I've provisionally booked that for you. {owner_name} or the clinic team will confirm shortly.",
+                "body": f"Perfect {c_name}, I've provisionally booked that for you. {owner_name} or the team will confirm shortly.",
                 "cta": "none",
                 "rationale": "Customer booking confirmation on behalf of merchant."
             }
@@ -540,14 +595,14 @@ async def reply(data: ReplyPayload):
     if any(term in msg_lower for term in ["gst", "tax", "account", "payment", "billing", "invoice"]):
         hostile_patterns = ["stop", "unsubscribe", "useless", "not interested", "bothering", "spam", "don't message", "leave me alone"]
         if any(pattern in msg_lower for pattern in hostile_patterns):
-            body = f"I apologize if my previous messages were unhelpful {salutation}. Regarding your question, I leave that to your accountant. I'm here to help with practice growth â€” should I pause messaging for now?"
+            body = f"I apologize if my previous messages were unhelpful {salutation}. Regarding your question, I leave that to your accountant. I'm here to help with practice growth — should I pause messaging for now?"
             return {
                 "action": "send",
                 "body": body,
                 "cta": "binary_yes_no",
                 "rationale": "Handled hostile curveball politely."
             }
-        body = f"I'll have to leave that to your accountant {salutation} â€” that's outside my scope. Coming back to your practice growth â€” want me to draft that patient communication we discussed?"
+        body = f"I'll have to leave that to your accountant {salutation} — that's outside my scope. Coming back to your practice growth — want me to draft that patient communication we discussed?"
         return {
             "action": "send",
             "body": body,
@@ -567,7 +622,7 @@ async def reply(data: ReplyPayload):
     commitment_patterns = ["yes", "do it", "sure", "next", "ok", "draft", "proceed", "go ahead", "sounds good"]
     if any(pattern in msg_lower for pattern in commitment_patterns):
         if category_slug == "dentists":
-            body = f"Perfect {salutation}. Drafting your patient WhatsApp now â€” 90 seconds. I'll also pre-fill the GBP post for tomorrow 10am. Reply CONFIRM to send the WhatsApp draft to your patient list."
+            body = f"Perfect {salutation}. Drafting your patient WhatsApp now — 90 seconds. I'll also pre-fill the GBP post for tomorrow 10am. Reply CONFIRM to send the WhatsApp draft to your patient list."
         elif category_slug == "salons":
             body = f"Great {salutation}! Creating your bridal package promotion now. I'll have the social media posts ready in 2 minutes. Reply CONFIRM to schedule them."
         elif category_slug == "restaurants":
