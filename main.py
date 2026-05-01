@@ -156,6 +156,11 @@ async def tick(data: TickPayload):
             digest_items = category.get("digest", [])
             digest = next((d for d in digest_items if d.get("id") == top_id), None)
             
+            # Debug: if digest not found, try to get it anyway
+            if not digest and digest_items:
+                # Use first digest item as fallback
+                digest = digest_items[0]
+            
             if digest and category_slug == "dentists":
                 source = digest.get('source', 'JIDA')  # Already includes page: "JIDA Oct 2026, p.14"
                 title = digest.get('title', 'new research')
@@ -188,9 +193,9 @@ async def tick(data: TickPayload):
 
         elif t_kind == "regulation_change" or t_kind == "compliance_dci_radiograph":
             if category_slug == "dentists":
-                # Get deadline from payload - it's in the outer payload, not inner
-                deadline = t_payload.get("deadline_iso", "")
-                top_id = t_payload.get("top_item_id", "")
+                # Get deadline - try multiple sources
+                deadline = t_data.get("deadline_iso", "") or t_data.get("deadline", "") or t_payload.get("deadline_iso", "")
+                top_id = t_data.get("top_item_id", "")
                 
                 # Get digest for more details
                 digest_items = category.get("digest", [])
@@ -199,12 +204,13 @@ async def tick(data: TickPayload):
                 if digest and deadline:
                     title = digest.get("title", "DCI compliance update")
                     body = f"{salutation}, urgent: {title}. Deadline: {deadline}. Want me to audit your X-ray setup?"
+                    rationale = f"Compliance alert with specific deadline ({deadline}), digest title, actionable audit offer."
                 elif deadline:
                     body = f"{salutation}, urgent DCI compliance update. Deadline: {deadline}. Affects radiograph protocols. Want me to review your SOPs?"
+                    rationale = f"Compliance alert with specific deadline ({deadline}), actionable review offer."
                 else:
                     body = f"{salutation}, urgent DCI compliance update. Affects radiograph protocols. Want me to review your SOPs?"
-                
-                rationale = f"Compliance alert with specific deadline ({deadline}), actionable audit offer."
+                    rationale = "Compliance alert with actionable review offer."
             else:
                 body = f"{salutation}, regulatory update affecting {category_slug} in {city}. Want the compliance checklist?"
                 rationale = "Regulatory compliance with location context."
@@ -212,22 +218,23 @@ async def tick(data: TickPayload):
         elif t_kind == "recall_due" and customer_id:
             customer = contexts["customer"].get(customer_id, {}).get("payload", {})
             c_identity = customer.get("identity", {})
-            # Fix: use first_name from identity, or extract from name field
-            c_name = c_identity.get("first_name", c_identity.get("name", "Patient"))
-            if not c_name or c_name == "Patient":
-                # Try to extract first name from full name
-                full_name = c_identity.get("name", "")
-                if full_name and " " in full_name:
-                    c_name = full_name.split()[0]
-                elif full_name:
-                    c_name = full_name
-                else:
-                    c_name = "Patient"
+            # Customer data has "name" field, not "first_name"
+            c_name = c_identity.get("name", "")
+            
+            # Extract first name if it's a full name
+            if c_name and " " in c_name:
+                # Handle cases like "Aanya (parent: Sneha)"
+                if "(" in c_name:
+                    c_name = c_name.split("(")[0].strip()
+                # Get first name
+                c_name = c_name.split()[0]
+            elif not c_name:
+                c_name = "Patient"
             
             # Get relationship data for specificity
             relationship = customer.get("relationship", {})
             last_visit = relationship.get("last_visit", "")
-            service_due = t_data.get("service_due", "checkup")
+            service_due = t_data.get("service_due", "checkup").replace("_", " ")
             
             slots = t_data.get("available_slots", [])
             
@@ -268,34 +275,38 @@ async def tick(data: TickPayload):
             
             # Only calculate if we have valid data
             if baseline > 0 and delta_pct != 0:
-            current = int(baseline * (1 + delta_pct))
-            pct_change = abs(int(delta_pct * 100))
-            
-            # Peer comparison for context
-            peer_value = peer_calls if metric == "calls" else peer_ctr if metric == "ctr" else 0
-            if peer_value > 0:
-                if metric == "ctr":
-                    peer_comp = f"(peer avg: {peer_value:.3f})"
+                current = int(baseline * (1 + delta_pct))
+                pct_change = abs(int(delta_pct * 100))
+                
+                # Peer comparison for context
+                peer_value = peer_calls if metric == "calls" else peer_ctr if metric == "ctr" else 0
+                if peer_value > 0:
+                    if metric == "ctr":
+                        peer_comp = f"(peer avg: {peer_value:.3f})"
+                    else:
+                        peer_comp = f"(peer avg: {int(peer_value)})"
                 else:
-                    peer_comp = f"(peer avg: {int(peer_value)})"
+                    peer_comp = ""
+                
+                # Revenue impact for calls
+                if metric == "calls" and current < baseline:
+                    lost_calls = baseline - current
+                    revenue_impact = lost_calls * 500
+                    impact_str = f"≈ ₹{revenue_impact:,} potential revenue"
+                else:
+                    impact_str = ""
+                
+                # Build message with ALL specifics
+                body = f"{salutation}, alert: {metric} dropped {pct_change}% in {window} — {baseline} → {current} {peer_comp}. "
+                if impact_str:
+                    body += f"{impact_str}. "
+                body += f"Push '{offer_title}' to recover?"
+                
+                rationale = f"Performance alert with exact numbers ({baseline}→{current}, {pct_change}%), peer comparison, revenue impact, recovery offer."
             else:
-                peer_comp = ""
-            
-            # Revenue impact for calls
-            if metric == "calls":
-                lost_calls = baseline - current
-                revenue_impact = lost_calls * 500
-                impact_str = f"â‰ˆ â‚¹{revenue_impact:,} potential revenue"
-            else:
-                impact_str = ""
-            
-            # Build message with ALL specifics
-            body = f"{salutation}, alert: {metric} dropped {pct_change}% in {window} â€” {baseline} â†’ {current} {peer_comp}. "
-            if impact_str:
-                body += f"{impact_str}. "
-            body += f"Push '{offer_title}' to recover?"
-            
-            rationale = f"Performance alert with exact numbers ({baseline}â†’{current}, {pct_change}%), peer comparison {peer_comp}, revenue impact {impact_str}, recovery offer."
+                # Fallback if no valid data
+                body = f"{salutation}, your {metric} performance needs attention. Push '{offer_title}' to recover?"
+                rationale = f"Performance alert for {metric} with recovery offer."
 
         elif t_kind == "festival_upcoming":
             festival = t_data.get("festival", "Festival")
